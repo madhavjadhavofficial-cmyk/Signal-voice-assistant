@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<title>SignalSpeak — ESP32 Traffic Light Voice Alert</title>
+<meta name="description" content="Connect your AI Thinker ESP32-CAM live stream and hear red, yellow and green traffic light alerts.">
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --line:#2d333b; --text:#f0f3f6; --muted:#a8b3bf;
+          --red:#ff4d4d; --yellow:#ffd23f; --green:#3ddc84; --none:#6b7683; color-scheme:dark; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; }
+  body { background:var(--bg); color:var(--text); font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+         padding:max(20px,env(safe-area-inset-top)) 16px max(28px,env(safe-area-inset-bottom)); }
+  main { max-width:560px; margin:0 auto; display:grid; gap:16px; }
+  header p { margin:0; } .label,.sub { color:var(--muted); } .label { font-size:14px; }
+  h1 { margin:2px 0 8px; font-size:40px; line-height:1.1; letter-spacing:-.5px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:20px; padding:16px; }
+  .tabs { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  button,input[type=text],.filebtn { font:inherit; color:var(--text); min-height:48px; padding:0 14px;
+         background:#1f2630; border:1px solid var(--line); border-radius:14px; }
+  button,.filebtn { cursor:pointer; } button:disabled { opacity:.45; cursor:not-allowed; }
+  button:not(:disabled):hover,.filebtn:hover { border-color:#566170; }
+  :focus-visible { outline:3px solid #7cc4ff; outline-offset:2px; }
+  .tab[aria-selected="true"] { background:#243044; border-color:#7cc4ff; font-weight:600; }
+  .primary { background:#2563eb; border-color:#2563eb; font-weight:600; }
+  .primary:not(:disabled):hover { background:#1d4fd0; border-color:#1d4fd0; }
+  .fields { display:grid; gap:10px; margin-bottom:12px; }
+  .fields label { display:grid; gap:4px; font-size:14px; color:var(--muted); }
+  .fields input { width:100%; color:var(--text); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; } .row>* { flex:1 1 140px; }
+  .status { display:flex; align-items:center; gap:8px; margin-bottom:10px; font-weight:600; }
+  .dot { width:12px; height:12px; border-radius:50%; background:var(--red); flex:none; }
+  .status[data-k="on"] .dot { background:var(--green); box-shadow:0 0 10px var(--green); }
+  .status[data-k="viewonly"] .dot,.status[data-k="connecting"] .dot,.status[data-k="retry"] .dot { background:var(--yellow); }
+  .view { position:relative; aspect-ratio:4/3; width:100%; background:#05070a; border-radius:14px; overflow:hidden;
+          display:grid; place-items:center; text-align:center; color:var(--muted); margin-bottom:12px; }
+  .view>canvas,.view>video,.view>img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:none; }
+  .ph { padding:16px; }
+  .msg { margin:10px 0 0; min-height:22px; color:#ffb4b4; font-size:14px; }
+  .result { border:2px solid var(--glow,var(--none)); box-shadow:0 0 28px color-mix(in srgb,var(--glow,var(--none)) 45%,transparent);
+            display:flex; align-items:center; gap:16px; transition:border-color .2s,box-shadow .2s; }
+  .result[data-state="red"] { --glow:var(--red); } .result[data-state="yellow"] { --glow:var(--yellow); }
+  .result[data-state="green"] { --glow:var(--green); }
+  .light { flex:none; width:56px; padding:8px; border-radius:16px; background:#05070a; display:grid; gap:6px; }
+  .light i { display:block; width:100%; aspect-ratio:1; border-radius:50%; background:#262c34; }
+  .result[data-state="red"] .light i:nth-child(1){ background:var(--red); box-shadow:0 0 14px var(--red); }
+  .result[data-state="yellow"] .light i:nth-child(2){ background:var(--yellow); box-shadow:0 0 14px var(--yellow); }
+  .result[data-state="green"] .light i:nth-child(3){ background:var(--green); box-shadow:0 0 14px var(--green); }
+  .result h2 { margin:0; font-size:26px; line-height:1.2; } .result p { margin:2px 0 0; color:var(--muted); }
+  .note { font-size:13px; color:var(--muted); margin:0; }
+  .filebtn { display:flex; align-items:center; justify-content:center; position:relative; }
+  .filebtn input { position:absolute; opacity:0; width:1px; height:1px; }
+  [hidden] { display:none !important; }
+  @media (prefers-reduced-motion:reduce){ *{ transition:none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="label">ESP32-CAM · Voice Alert</p>
+    <h1>SignalSpeak</h1>
+    <p class="sub">Red = cross · Yellow = wait · Green = stop. Bluetooth audio uses your device’s selected speaker or earphones.</p>
+  </header>
+
+  <section class="card" aria-label="Input source">
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" id="tab-esp" aria-selected="true">ESP32-CAM</button>
+      <button class="tab" role="tab" id="tab-cam" aria-selected="false">Phone camera</button>
+      <button class="tab" role="tab" id="tab-up" aria-selected="false">Upload photo</button>
+    </div>
+  </section>
+
+  <section class="card" aria-label="Camera">
+    <div id="p-esp">
+      <div class="fields">
+        <label>ESP32-CAM IP address
+          <input type="text" id="ip" inputmode="decimal" placeholder="e.g. 192.168.1.50" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <label>Stream URL (optional override)
+          <input type="text" id="streamUrl" placeholder="e.g. http://192.168.1.50:81/stream" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      </div>
+      <div class="row">
+        <button class="primary" id="connect">Connect Camera</button>
+        <button id="disconnect" disabled>Disconnect</button>
+      </div>
+    </div>
+    <div id="p-cam" class="row" hidden>
+      <button class="primary" id="camStart">Start camera</button>
+      <button id="camStop" disabled>Stop camera</button>
+    </div>
+    <div id="p-up" hidden>
+      <label class="filebtn primary">Choose photo<input type="file" id="file" accept="image/*"></label>
+    </div>
+
+    <div class="status" id="status" data-k="off" style="margin-top:14px"><span class="dot"></span><span id="statusTxt">Camera Disconnected</span></div>
+    <div class="view" id="view">
+      <canvas id="screen"></canvas>
+      <img id="fallback" alt="ESP32-CAM live view">
+      <video id="video" playsinline muted></video>
+      <img id="photo" alt="Uploaded photo">
+      <div class="ph" id="ph">Camera Disconnected — no live feed</div>
+    </div>
+    <p class="msg" id="msg" role="status"></p>
+  </section>
+
+  <section class="card result" id="result" data-state="none" aria-live="assertive" aria-atomic="true">
+    <div class="light" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div><h2 id="rTitle">No detection</h2><p id="rSub">Point the camera at a traffic light.</p></div>
+  </section>
+
+  <section class="card row" aria-label="Voice">
+    <button id="voiceBtn" aria-pressed="true">Voice on</button>
+    <button id="repeatBtn">Repeat voice</button>
+  </section>
+
+  <p class="note">Assistive aid only. Do not rely on it alone to decide whether a road is safe to cross.</p>
+</main>
+<canvas id="work" hidden></canvas>
+
+<script>
+"use strict";
+/* ================= Detection (pure function, works on RGBA pixels) ================= */
+/*DETECT_START*/
+function detectRGBA(data, W, H) {
+  const n = W * H, cls = new Uint8Array(n), val = new Uint8Array(n);
+  const dark = new Int32Array((W + 1) * (H + 1));
+  const DARK = 95;
+  for (let y = 0; y < H; y++) {
+    let rowSum = 0;
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x, j = i * 4;
+      const r = data[j] / 255, g = data[j + 1] / 255, b = data[j + 2] / 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+      val[i] = (max * 255) | 0;
+      if (max >= 0.72 && max > 0 && d / max >= 0.5) {
+        let h;
+        if (max === r) h = 60 * (((g - b) / d) % 6); else if (max === g) h = 60 * ((b - r) / d + 2); else h = 60 * ((r - g) / d + 4);
+        if (h < 0) h += 360;
+        if (h <= 15 || h >= 345) cls[i] = 1; else if (h >= 38 && h <= 70) cls[i] = 2; else if (h >= 95 && h <= 170) cls[i] = 3;
+      }
+      rowSum += val[i] < DARK ? 1 : 0;
+      dark[(y + 1) * (W + 1) + (x + 1)] = dark[y * (W + 1) + (x + 1)] + rowSum;
+    }
+  }
+  function darkFrac(x0, y0, x1, y1) {
+    x0 = Math.max(0, Math.round(x0)); y0 = Math.max(0, Math.round(y0));
+    x1 = Math.min(W - 1, Math.round(x1)); y1 = Math.min(H - 1, Math.round(y1));
+    if (x1 < x0 || y1 < y0) return 0;
+    const s = dark[(y1 + 1) * (W + 1) + (x1 + 1)] - dark[y0 * (W + 1) + (x1 + 1)] - dark[(y1 + 1) * (W + 1) + x0] + dark[y0 * (W + 1) + x0];
+    return s / ((x1 - x0 + 1) * (y1 - y0 + 1));
+  }
+  const MINA = Math.max(12, Math.round(n * 0.0004)), MAXA = Math.round(n * 0.05);
+  const seen = new Uint8Array(n), stack = new Int32Array(n);
+  let best = null;
+  for (let s = 0; s < n; s++) {
+    const c = cls[s];
+    if (!c || seen[s]) continue;
+    let sp = 0, area = 0, minx = W, maxx = 0, miny = H, maxy = 0;
+    stack[sp++] = s; seen[s] = 1;
+    while (sp) {
+      const p = stack[--sp], px = p % W, py = (p / W) | 0;
+      area++;
+      if (px < minx) minx = px; if (px > maxx) maxx = px; if (py < miny) miny = py; if (py > maxy) maxy = py;
+      if (px > 0 && cls[p - 1] === c && !seen[p - 1]) { seen[p - 1] = 1; stack[sp++] = p - 1; }
+      if (px < W - 1 && cls[p + 1] === c && !seen[p + 1]) { seen[p + 1] = 1; stack[sp++] = p + 1; }
+      if (py > 0 && cls[p - W] === c && !seen[p - W]) { seen[p - W] = 1; stack[sp++] = p - W; }
+      if (py < H - 1 && cls[p + W] === c && !seen[p + W]) { seen[p + W] = 1; stack[sp++] = p + W; }
+    }
+    if (area < MINA || area > MAXA) continue;
+    const bw = maxx - minx + 1, bh = maxy - miny + 1, asp = bw / bh;
+    if (asp < 0.6 || asp > 1.6 || area / (bw * bh) < 0.4) continue;          // round lamp
+    const d = Math.max(bw, bh);
+    const side = (darkFrac(minx - 0.3 * d, miny, minx - 1, maxy) + darkFrac(maxx + 1, miny, maxx + 0.3 * d, maxy)) / 2;
+    const above = darkFrac(minx - 0.3 * d, miny - 2.4 * d, maxx + 0.3 * d, miny - 1);
+    const below = darkFrac(minx - 0.3 * d, maxy + 1, maxx + 0.3 * d, maxy + 2.4 * d);
+    if (side < 0.55) continue;                                                // dark housing beside the lamp
+    if (c === 1 && below < 0.55) continue;                                    // red = top lamp
+    if (c === 3 && above < 0.55) continue;                                    // green = bottom lamp
+    if (c === 2 && (above < 0.5 || below < 0.5)) continue;                    // yellow = middle lamp
+    if (!best || area > best.area) best = { c, area };
+  }
+  return best ? ["none", "red", "yellow", "green"][best.c] : "none";
+}
+/*DETECT_END*/
+
+/* ================= MJPEG parsing ================= */
+/*MJPEG_START*/
+function findMarker(b, m2, from) {
+  for (let i = from; i < b.length - 1; i++) if (b[i] === 0xFF && b[i + 1] === m2) return i;
+  return -1;
+}
+function cat(a, b) { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; }
+function pullFrame(buf) {            // newest complete JPEG in buf + leftover bytes
+  let last = null, pos = 0;
+  for (;;) {
+    const s = findMarker(buf, 0xD8, pos);
+    if (s < 0) return { frame: last, rest: buf.subarray(Math.max(pos, buf.length - 1)) };
+    const e = findMarker(buf, 0xD9, s + 2);
+    if (e < 0) return { frame: last, rest: buf.subarray(s) };
+    last = buf.subarray(s, e + 2); pos = e + 2;
+    if (pos >= buf.length) return { frame: last, rest: new Uint8Array(0) };
+  }
+}
+/*MJPEG_END*/
+
+/* ================= App ================= */
+const $ = (id) => document.getElementById(id);
+const screenC = $("screen"), sctx = screenC.getContext("2d");
+const work = $("work"), wctx = work.getContext("2d", { willReadFrequently: true });
+const video = $("video"), photo = $("photo"), fallback = $("fallback"), ph = $("ph");
+const SAY = { red: "You can cross the road.", yellow: "Please wait.", green: "Stop. Do not cross the road." };
+const TXT = {
+  none: ["No detection", "Point the camera at a traffic light."],
+  red: ["RED — Safe to cross", "Car signal is red."],
+  yellow: ["YELLOW — Wait", "Signal is changing. Please wait."],
+  green: ["GREEN — Stop", "Do not cross."]
+};
+let mode = "esp", cur = "none", cand = "none", streak = 0, lastAlert = null, voiceOn = true;
+let phoneStream = null, phoneTimer = null;
+const esp = { ctrl: null, wd: null, lastFrame: 0, lastScan: 0, retry: 0, retryT: null, wanted: false, connected: false };
+const MAX_RETRY = 5;
+
+function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function load(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
+function msg(t) { $("msg").textContent = t || ""; }
+
+/* ---------- views / status ---------- */
+function showView(which) {
+  screenC.style.display = which === "screen" ? "block" : "none";
+  fallback.style.display = which === "fallback" ? "block" : "none";
+  video.style.display = which === "video" ? "block" : "none";
+  photo.style.display = which === "photo" ? "block" : "none";
+  ph.hidden = which !== "ph";
+}
+function setStatus(kind, n) {
+  const names = { off: "Camera Disconnected", lost: "Camera Disconnected", connecting: "Connecting…", on: "Camera Connected",
+                  viewonly: "Connected — view only", retry: "Reconnecting… (" + n + "/" + MAX_RETRY + ")" };
+  $("status").dataset.k = kind; $("statusTxt").textContent = names[kind];
+  const busy = ["connecting", "on", "viewonly", "retry"].includes(kind);
+  $("connect").disabled = busy; $("connect").textContent = kind === "lost" ? "Reconnect" : "Connect Camera";
+  $("disconnect").disabled = !busy;
+  if (kind === "off" || kind === "lost" || kind === "retry" || kind === "connecting") { showView("ph"); ph.textContent = "Camera Disconnected — no live feed"; }
+}
+
+/* ---------- detection state + voice ---------- */
+function render(s) {
+  $("result").dataset.state = s; $("rTitle").textContent = TXT[s][0]; $("rSub").textContent = TXT[s][1];
+}
+function speak(text) {
+  if (!("speechSynthesis" in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-IN"; u.rate = 0.95;
+  const vs = speechSynthesis.getVoices();
+  u.voice = vs.find(v => v.lang.replace("_", "-") === "en-IN") || vs.find(v => v.lang.toLowerCase().startsWith("en")) || null;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+}
+function setCurrent(s) {
+  cur = s; render(s);
+  if (s !== "none") { lastAlert = s; if (voiceOn) speak(SAY[s]); }   // announce only when the state changes
+}
+function smooth(raw) {
+  if (raw === cand) streak++; else { cand = raw; streak = 1; }
+  if (streak >= (raw === "none" ? 6 : 3) && cand !== cur) setCurrent(cand);
+}
+function resetDetection() { cand = "none"; streak = 0; cur = "none"; render("none"); }
+
+function scan(source, sw, sh) {
+  if (!sw || !sh) return null;
+  const W = 240, H = Math.max(1, Math.round(W * sh / sw));
+  work.width = W; work.height = H; wctx.drawImage(source, 0, 0, W, H);
+  try { return detectRGBA(wctx.getImageData(0, 0, W, H).data, W, H); } catch (e) { return null; }
+}
+
+/* ---------- ESP32-CAM ---------- */
+function resolveUrl() {
+  const o = $("streamUrl").value.trim();
+  if (o) return /^https?:\/\//i.test(o) ? o : "http://" + o;
+  const raw = $("ip").value.trim().replace(/^https?:\/\//i, "");
+  if (!raw) return "";
+  const sl = raw.indexOf("/");
+  let host = sl < 0 ? raw : raw.slice(0, sl), path = sl < 0 ? "" : raw.slice(sl);
+  if (!/:\d+$/.test(host)) host += ":81";
+  return "http://" + host + (path || "/stream");
+}
+function teardownStream() {
+  clearInterval(esp.wd); esp.wd = null; esp.connected = false;
+  const c = esp.ctrl; esp.ctrl = null;
+  if (c) { try { c.abort(); } catch (e) {} }
+  fallback.removeAttribute("src"); fallback.onerror = null;
+}
+function lostHint(url) {
+  if (location.protocol === "https:" && /^http:/i.test(url))
+    return "The browser blocks an HTTP camera on an HTTPS page. Use the Android app, or open this page over http.";
+  return "Cannot reach the camera. Check the IP address, that the ESP32-CAM is powered, and that both are on the same Wi-Fi.";
+}
+function onLost(url) {
+  teardownStream(); resetDetection();
+  if (!esp.wanted) return;
+  if (esp.retry < MAX_RETRY) {
+    esp.retry++; setStatus("retry", esp.retry); msg(lostHint(url));
+    esp.retryT = setTimeout(() => espConnect(false), 2000 * esp.retry);
+  } else {
+    esp.wanted = false; setStatus("lost"); msg(lostHint(url) + " Press Reconnect to try again.");
+  }
+}
+async function espConnect(manual) {
+  clearTimeout(esp.retryT);
+  const url = resolveUrl();
+  if (!url) { msg("Enter the ESP32-CAM IP address first."); return; }
+  store("ip", $("ip").value.trim()); store("streamUrl", $("streamUrl").value.trim());
+  if (manual) esp.retry = 0;
+  esp.wanted = true; teardownStream(); msg("");
+  if (!manual && esp.retry) setStatus("retry", esp.retry); else setStatus("connecting");
+  const ctrl = new AbortController(); esp.ctrl = ctrl;
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
+    if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
+    const reader = res.body.getReader();
+    let buf = new Uint8Array(0);
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) throw new Error("stream ended");
+      buf = cat(buf, value);
+      const p = pullFrame(buf); buf = p.rest.length > 1500000 ? new Uint8Array(0) : p.rest;
+      if (!p.frame) continue;
+      let bmp;
+      try { bmp = await createImageBitmap(new Blob([p.frame], { type: "image/jpeg" })); } catch (e) { continue; }
+      if (ctrl !== esp.ctrl) { bmp.close && bmp.close(); return; }
+      if (screenC.width !== bmp.width || screenC.height !== bmp.height) { screenC.width = bmp.width; screenC.height = bmp.height; }
+      sctx.drawImage(bmp, 0, 0); bmp.close && bmp.close();
+      esp.lastFrame = Date.now();
+      if (!esp.connected) {
+        esp.connected = true; esp.retry = 0; msg(""); setStatus("on"); showView("screen");
+        esp.wd = setInterval(() => { if (Date.now() - esp.lastFrame > 6000) onLost(url); }, 1000);
+      }
+      if (Date.now() - esp.lastScan >= 300) {
+        esp.lastScan = Date.now();
+        const r = scan(screenC, screenC.width, screenC.height);
+        if (r) smooth(r);
+      }
+    }
+  } catch (e) {
+    if (ctrl !== esp.ctrl) return;                                  // disconnected on purpose or superseded
+    if (!esp.connected && e instanceof TypeError) { imgFallback(url, ctrl); return; }
+    onLost(url);
+  }
+}
+/* Used only when the camera cannot be read with fetch (no CORS header): shows the live picture, no detection. */
+function imgFallback(url, ctrl) {
+  fallback.onerror = () => { if (ctrl === esp.ctrl) onLost(url); };
+  fallback.src = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
+  const t0 = Date.now();
+  esp.wd = setInterval(() => {
+    if (ctrl !== esp.ctrl) { clearInterval(esp.wd); return; }
+    if (fallback.naturalWidth > 0) {
+      clearInterval(esp.wd); esp.wd = null; esp.connected = true; esp.retry = 0;
+      setStatus("viewonly"); showView("fallback");
+      msg("Live view works, but detection is blocked. The ESP32-CAM must send the header Access-Control-Allow-Origin (see esp32-cam.ino).");
+    } else if (Date.now() - t0 > 8000) { clearInterval(esp.wd); onLost(url); }
+  }, 400);
+}
+function espDisconnect() {
+  esp.wanted = false; clearTimeout(esp.retryT); teardownStream(); resetDetection();
+  setStatus("off"); msg("");
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+}
+
+/* ---------- Phone camera ---------- */
+async function camStart() {
+  msg("");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { msg("This browser cannot open the camera (HTTPS is required)."); return; }
+  try {
+    phoneStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } }, audio: false });
+    video.srcObject = phoneStream; await video.play(); showView("video");
+    $("camStart").disabled = true; $("camStop").disabled = false;
+    $("statusTxt").textContent = "Phone camera on"; $("status").dataset.k = "on";
+    clearInterval(phoneTimer);
+    phoneTimer = setInterval(() => {
+      if (video.readyState < 2) return;
+      const r = scan(video, video.videoWidth, video.videoHeight); if (r) smooth(r);
+    }, 300);
+  } catch (e) {
+    msg(e && e.name === "NotAllowedError" ? "Camera permission was denied. Allow camera access in settings and try again."
+        : e && e.name === "NotFoundError" ? "No camera was found on this device." : "Could not start the camera.");
+  }
+}
+function camStop() {
+  clearInterval(phoneTimer); phoneTimer = null;
+  if (phoneStream) { phoneStream.getTracks().forEach(t => t.stop()); phoneStream = null; }
+  video.srcObject = null; showView("ph"); ph.textContent = "Camera is off. Press Start camera.";
+  $("camStart").disabled = false; $("camStop").disabled = true;
+  $("statusTxt").textContent = "Phone camera off"; $("status").dataset.k = "off";
+  resetDetection();
+}
+
+/* ---------- Upload ---------- */
+$("file").addEventListener("change", (e) => {
+  const f = e.target.files && e.target.files[0]; if (!f) return;
+  msg(""); const url = URL.createObjectURL(f);
+  photo.onload = () => {
+    showView("photo");
+    const r = scan(photo, photo.naturalWidth, photo.naturalHeight) || "none";
+    cur = "none"; setCurrent(r);
+    msg(r === "none" ? "No traffic light was found in this photo." : "");
+    URL.revokeObjectURL(url);
+  };
+  photo.onerror = () => msg("That file could not be read as an image.");
+  photo.src = url;
+});
+
+/* ---------- Tabs ---------- */
+function stopAll() { espDisconnect(); camStop(); }
+function setMode(m) {
+  if (m === mode) return;
+  stopAll(); mode = m; msg("");
+  $("p-esp").hidden = m !== "esp"; $("p-cam").hidden = m !== "cam"; $("p-up").hidden = m !== "up";
+  ["esp", "cam", "up"].forEach(k => $("tab-" + k).setAttribute("aria-selected", k === m));
+  if (m === "esp") { setStatus("off"); }
+  else {
+    $("status").dataset.k = "off";
+    $("statusTxt").textContent = m === "cam" ? "Phone camera off" : "Photo mode";
+    showView("ph"); ph.textContent = m === "cam" ? "Camera is off. Press Start camera." : "Choose a photo of a traffic light.";
+  }
+}
+
+/* ---------- Voice buttons ---------- */
+$("voiceBtn").addEventListener("click", () => {
+  voiceOn = !voiceOn;
+  $("voiceBtn").textContent = voiceOn ? "Voice on" : "Voice off";
+  $("voiceBtn").setAttribute("aria-pressed", voiceOn);
+  if (!voiceOn && "speechSynthesis" in window) speechSynthesis.cancel();
+});
+$("repeatBtn").addEventListener("click", () => {
+  if (!voiceOn) { msg("Voice is off. Turn Voice on to hear alerts."); return; }
+  msg(""); const s = cur !== "none" ? cur : lastAlert;
+  speak(s ? SAY[s] : "No traffic signal detected yet.");
+});
+
+/* ---------- Wiring ---------- */
+$("tab-esp").onclick = () => setMode("esp"); $("tab-cam").onclick = () => setMode("cam"); $("tab-up").onclick = () => setMode("up");
+$("connect").onclick = () => espConnect(true);
+$("disconnect").onclick = espDisconnect;
+$("camStart").onclick = camStart; $("camStop").onclick = camStop;
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && mode === "esp" && esp.wanted && !esp.connected && !esp.ctrl) espConnect(false);
+});
+$("ip").addEventListener("keydown", e => { if (e.key === "Enter" && !$("connect").disabled) espConnect(true); });
+$("ip").value = load("ip"); $("streamUrl").value = load("streamUrl");
+if ("speechSynthesis" in window) speechSynthesis.getVoices();
+setStatus("off"); render("none");
+</script>
+</body>
+</html>

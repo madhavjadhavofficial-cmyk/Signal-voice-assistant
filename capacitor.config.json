@@ -1,0 +1,9 @@
+{
+  "appId": "com.madhav.signalspeak",
+  "appName": "SignalSpeak",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  }
+}
